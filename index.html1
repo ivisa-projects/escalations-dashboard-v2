@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iVisa Escalations</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<!--
+================================================================================
+  iVISA ESCALATIONS DASHBOARD — FINAL
+  READ-ONLY: All status changes via Slack workflow buttons
+  Sheet col I is single source of truth for status
+
+  SHEET COLUMNS:
+  A: Intercom_link
+  B: Intercom_ID
+  C: Product
+  D: Agent
+  E: TL
+  F: Escalated_date_time   (UTC — start of everything)
+  G: Slack_Channel
+  H: (unused — Priority no longer shown on this dashboard)
+  I: Status                (Escalated/Validation/Pending/Resolved/Unresolved/CX Outbound/Returned)
+  J: Validation_time       (UTC)
+  K: Pending_time          (UTC)
+  L: Resolved_time         (UTC — also used for Unresolved start)
+  M: Cx_outbound           (UTC — STOPS ALL TIMERS)
+  N: Resolved_by
+  O: Order_Number
+  P: Reason                (NEW — filled in by the Slack workflow)
+
+  TIMER FLOW:
+  ┌───────────┐  J  ┌────────────┐  K  ┌─────────┐  L  ┌──────────────────────┐  M  ┌─────────────┐
+  │ Escalated ├────►│ Validation ├────►│ Pending ├────►│ Resolved / Unresolved ├────►│ CX Outbound │ ← STOP ALL
+  └───────────┘     └────────────┘     └─────────┘     └──────────────────────┘     └─────────────┘
+  Status = Returned → STOP ALL, freeze Total Time (the ONLY status that does this)
+
+  COLUMNS SHOWN:
+  ⏱ Escalated   = J - F          (frozen when J exists)
+  ⏱ Validation  = K - J          (frozen when K exists)
+  ⏱ Pending     = L - K          (frozen when L exists)
+  ⏱ Res/Unres   = M - L          (runs while Resolved OR Unresolved, stops at M)
+  ⏱ CX Outbound = now - M        (runs after CX Outbound, stops at Returned)
+  ⏱ Total Time  = sum of all     FROZEN only when status = Returned
+
+  RETURNED = the only status that fully stops everything and shows Total Time
+================================================================================
+-->
+<style>
+/* ── DESIGN TOKENS ──
+   Deliberately NOT the near-black + green/teal "AI dashboard" look.
+   Signature accent: Iris (cool indigo-blue) for anything "live/running".
+   Status hues are a warm/cool mixed set — crimson, ochre, sage, plum,
+   rose, slate — none of them acid-green, vermilion, or terracotta-cream.
+*/
+[data-theme="dark"]{
+  --bg:#181b22;--surface:#20242e;--surface2:#2a2f3b;--border:#343a48;
+  --text:#eceef2;--muted:#8b93a3;--thead:#1c2029;--row-hover:#262b36;
+  --input-bg:#181b22;--modal-bg:rgba(0,0,0,.65);
+  --g:#7885e6;--g2:#5561c4;--g-dim:rgba(120,133,230,.15);--g-b:rgba(120,133,230,.35);
+  --red:#d95468;--red-dim:rgba(217,84,104,.14);--red-b:rgba(217,84,104,.36);
+  --amb:#8fa15f;--amb-dim:rgba(143,161,95,.14);--amb-b:rgba(143,161,95,.34);
+  --pur:#a86bc0;--pur-dim:rgba(168,107,192,.14);--pur-b:rgba(168,107,192,.32);
+  --teal:#d3a53f;--teal-dim:rgba(211,165,63,.14);--teal-b:rgba(211,165,63,.36);
+  --pink:#cd6c96;--pink-dim:rgba(205,108,150,.14);--pink-b:rgba(205,108,150,.36);
+  --orange:#7688a3;--orange-dim:rgba(118,136,163,.16);--orange-b:rgba(118,136,163,.4);
+  --slate:rgba(139,147,163,.08);
+}
+[data-theme="light"]{
+  --bg:#f2f3f7;--surface:#fff;--surface2:#eceef4;--border:#d8dbe4;
+  --text:#1c2029;--muted:#5b6273;--thead:#eceef4;--row-hover:#f2f3f7;
+  --input-bg:#fff;--modal-bg:rgba(15,16,24,.4);
+  --g:#4f5cc4;--g2:#3c48a0;--g-dim:rgba(79,92,196,.1);--g-b:rgba(79,92,196,.38);
+  --red:#b8354a;--red-dim:#fbe8eb;--red-b:#eab5bd;
+  --amb:#5f7038;--amb-dim:#eef1e2;--amb-b:#c3d09f;
+  --pur:#7c3f92;--pur-dim:#f3e7f8;--pur-b:#d9b6e4;
+  --teal:#9c7420;--teal-dim:#f8f0da;--teal-b:#e2c576;
+  --pink:#a34a70;--pink-dim:#f9e6ee;--pink-b:#e6b6cb;
+  --orange:#48566e;--orange-dim:#e7eaf0;--orange-b:#b7c0d1;
+  --slate:#eef0f4;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh;padding:20px 28px 60px;line-height:1.5;transition:background .25s,color .25s}
+
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;padding-bottom:18px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:14px}
+.logo-area h1{font-size:1.5rem;font-weight:800;letter-spacing:-.03em;background:linear-gradient(100deg,var(--text) 0%,var(--text) 20%,var(--g) 55%,var(--g2) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;display:inline-block}
+.header-meta{font-family:'DM Mono',monospace;font-size:.68rem;color:var(--muted);margin-top:3px}
+#status-badge{display:inline-flex;align-items:center;gap:6px;font-family:'DM Mono',monospace;font-size:.7rem;padding:4px 11px;border-radius:99px;border:1px solid var(--border);background:var(--surface)}
+#status-badge.live{border-color:var(--g);color:var(--g)}
+#status-badge.error{border-color:var(--red);color:var(--red)}
+#status-badge.demo{border-color:var(--teal);color:var(--teal)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.header-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.countdown{font-family:'DM Mono',monospace;font-size:.68rem;color:var(--muted)}
+.countdown span{color:var(--g)}
+button{cursor:pointer;font-family:'Syne',sans-serif;font-weight:600;font-size:.76rem;border:1px solid var(--border);background:var(--surface);color:var(--text);padding:7px 14px;border-radius:10px;transition:all .18s;display:inline-flex;align-items:center;gap:5px}
+button:hover{background:var(--surface2);border-color:var(--g);color:var(--g)}
+button.primary{background:var(--g);color:#12141b;border-color:var(--g);font-weight:700}
+button.primary:hover{background:var(--g2);border-color:var(--g2);color:#fff}
+
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px;margin-bottom:22px}
+.metric-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 14px 14px 17px;position:relative;overflow:hidden;transition:transform .2s}
+.metric-card:hover{transform:translateY(-2px)}
+.metric-card::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;border-radius:10px 0 0 10px}
+.mc-total::before  {background:linear-gradient(180deg,var(--g),var(--g2))}
+.mc-esc::before    {background:var(--red)}
+.mc-val::before    {background:var(--teal)}
+.mc-pen::before    {background:var(--amb)}
+.mc-res::before    {background:var(--pur)}
+.mc-cx::before     {background:var(--pink)}
+.mc-ret::before    {background:var(--orange)}
+.metric-label{font-size:.6rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:6px}
+.metric-value{font-size:1.8rem;font-weight:800;line-height:1;letter-spacing:-.04em}
+.mc-total  .metric-value{color:var(--g)}
+.mc-esc    .metric-value{color:var(--red)}
+.mc-val    .metric-value{color:var(--teal)}
+.mc-pen    .metric-value{color:var(--amb)}
+.mc-res    .metric-value{color:var(--pur)}
+.mc-cx     .metric-value{color:var(--pink)}
+.mc-ret    .metric-value{color:var(--orange)}
+
+.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.filters label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+select{font-family:'Syne',sans-serif;font-size:.76rem;font-weight:600;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:7px 11px;cursor:pointer;outline:none}
+select:hover,select:focus{border-color:var(--g)}
+input[type="text"],input[type="date"]{font-family:'DM Mono',monospace;font-size:.73rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:7px 13px;outline:none;min-width:180px}
+input[type="text"]::placeholder{color:var(--muted)}
+input[type="text"]:focus,input[type="date"]:focus{border-color:var(--g)}
+input[type="date"]{min-width:150px;color-scheme:dark}
+[data-theme="light"] input[type="date"]{color-scheme:light}
+
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.75rem;min-width:1740px}
+thead tr{background:var(--thead);border-bottom:1px solid var(--border)}
+th{padding:10px 11px;text-align:left;font-size:.58rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:700;white-space:nowrap;cursor:pointer;user-select:none}
+th:hover{color:var(--g)}
+tbody tr{border-bottom:1px solid var(--border);transition:background .15s}
+tbody tr:hover{background:var(--row-hover)}
+td{padding:9px 11px;vertical-align:middle;white-space:nowrap}
+.ticket-link{font-family:'DM Mono',monospace;font-size:.7rem;color:var(--g);font-weight:600;text-decoration:none;border-bottom:1px dashed var(--g-b)}
+.ticket-link:hover{color:var(--g2)}
+
+/* STATUS BADGE — read only display */
+.st-badge{font-family:'Syne',sans-serif;font-size:.64rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;border-radius:99px;padding:4px 12px;display:inline-block;white-space:nowrap}
+.st-escalated  {background:var(--red-dim);color:var(--red);border:1px solid var(--red-b)}
+.st-validation {background:var(--teal-dim);color:var(--teal);border:1px solid var(--teal-b)}
+.st-pending    {background:var(--amb-dim);color:var(--amb);border:1px solid var(--amb-b)}
+.st-resolved   {background:var(--pur-dim);color:var(--pur);border:1px solid var(--pur-b)}
+.st-unresolved {background:var(--pur-dim);color:var(--pur);border:1px solid var(--pur-b)}
+.st-cx-outbound{background:var(--pink-dim);color:var(--pink);border:1px solid var(--pink-b)}
+.st-returned   {background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange-b)}
+
+/* TIMERS */
+.timer{font-family:'DM Mono',monospace;font-size:.73rem;padding:3px 7px;border-radius:6px;display:inline-block;min-width:72px;text-align:center}
+.t-run   {background:var(--g-dim);color:var(--g);font-weight:700;border:1px solid var(--g-b)}
+.t-done  {background:var(--slate);color:var(--muted);border:1px solid transparent}
+.t-frozen{background:var(--pur-dim);color:var(--pur);border:1px solid var(--pur-b)}
+.t-cx    {background:var(--pink-dim);color:var(--pink);font-weight:700;border:1px solid var(--pink-b)}
+.t-cx-f  {background:var(--slate);color:var(--muted);border:1px solid transparent}
+.t-dash  {color:var(--border);background:transparent;border:none}
+
+/* Resolved/Unresolved timer — running vs frozen */
+.t-res-run{background:var(--pur-dim);color:var(--pur);font-weight:700;border:1px solid var(--pur-b)}
+
+/* TOTAL TIME */
+.tot{font-family:'DM Mono',monospace;font-size:.76rem;font-weight:700;padding:4px 10px;border-radius:6px;display:inline-block;min-width:76px;text-align:center}
+.tot-live  {background:var(--teal-dim);color:var(--teal);border:1px solid var(--teal-b)}
+.tot-frozen{background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange-b)}
+.tot-dash  {color:var(--border);background:transparent;border:none}
+
+.rb{font-size:.68rem;color:var(--g);font-weight:600}
+.rb.empty{color:var(--muted);font-style:italic;font-weight:400}
+
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:var(--modal-bg);z-index:998;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;max-width:500px;width:90%}
+.modal-box h2{font-size:1rem;font-weight:700;margin-bottom:8px}
+.modal-box p{font-size:.76rem;color:var(--muted);margin-bottom:10px;line-height:1.6}
+.modal-box label{display:block;font-size:.63rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:10px 0 4px}
+.modal-box input{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:8px;font-size:.8rem;font-family:'DM Mono',monospace;outline:none;background:var(--input-bg);color:var(--text)}
+.modal-box input:focus{border-color:var(--g)}
+.modal-actions{display:flex;gap:8px;margin-top:16px;align-items:center}
+
+#toast{position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px 18px;font-family:'DM Mono',monospace;font-size:.73rem;opacity:0;pointer-events:none;transition:opacity .3s;z-index:999;max-width:360px}
+#toast.show{opacity:1}
+#toast.success{border-color:var(--g-b);color:var(--g)}
+#toast.info   {border-color:var(--teal-b);color:var(--teal)}
+#toast.error  {border-color:var(--red-b);color:var(--red)}
+
+footer{margin-top:28px;text-align:center;font-family:'DM Mono',monospace;font-size:.62rem;color:var(--muted)}
+footer span{color:var(--g)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-area">
+    <h1>iVisa Escalations</h1>
+    <div class="header-meta" id="last-update">Connecting…</div>
+  </div>
+  <div class="header-actions">
+    <span class="countdown">Sync in <span id="countdown">10s</span></span>
+    <span id="status-badge" class="demo"><span class="dot"></span><span id="status-text">Loading</span></span>
+    <button onclick="toggleTheme()" id="theme-btn">☀ Light</button>
+    <button onclick="fetchData()">↻ Refresh</button>
+    <button onclick="openConfig()">⚙ Config</button>
+    <button onclick="exportCSV()" class="primary">↓ Export</button>
+  </div>
+</header>
+
+<div class="metrics">
+  <div class="metric-card mc-total"><div class="metric-label">Total</div><div class="metric-value" id="m-total">—</div></div>
+  <div class="metric-card mc-esc">  <div class="metric-label">Escalated</div><div class="metric-value" id="m-esc">—</div></div>
+  <div class="metric-card mc-val">  <div class="metric-label">Validation</div><div class="metric-value" id="m-val">—</div></div>
+  <div class="metric-card mc-pen">  <div class="metric-label">Pending</div><div class="metric-value" id="m-pen">—</div></div>
+  <div class="metric-card mc-res">  <div class="metric-label">Res/Unres</div><div class="metric-value" id="m-res">—</div></div>
+  <div class="metric-card mc-cx">   <div class="metric-label">CX Outbound</div><div class="metric-value" id="m-cx">—</div></div>
+  <div class="metric-card mc-ret">  <div class="metric-label">Returned</div><div class="metric-value" id="m-ret">—</div></div>
+</div>
+
+<div class="filters">
+  <label>Status:</label>
+  <select id="f-status" onchange="applyFilters()">
+    <option value="">All</option>
+    <option value="Escalated">Escalated</option>
+    <option value="Validation">Validation</option>
+    <option value="Pending">Pending</option>
+    <option value="Resolved">Resolved</option>
+    <option value="Unresolved">Unresolved</option>
+    <option value="CX Outbound">CX Outbound</option>
+    <option value="Returned">Returned</option>
+  </select>
+  <label>TL:</label>
+  <select id="f-tl" onchange="applyFilters()"><option value="">All TLs</option></select>
+  <label>Channel:</label>
+  <select id="f-ch" onchange="applyFilters()"><option value="">All Channels</option></select>
+  <label>Reason:</label>
+  <select id="f-reason" onchange="applyFilters()"><option value="">All Reasons</option></select>
+  <label>From:</label>
+  <input type="date" id="f-date-from" onchange="applyFilters()">
+  <label>To:</label>
+  <input type="date" id="f-date-to" onchange="applyFilters()">
+  <input type="text" id="f-search" placeholder="Search ID, order#, agent, product…" oninput="applyFilters()">
+  <button onclick="resetFilters()">✕ Clear</button>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th onclick="sortBy('id')">Intercom ID ↕</th>
+        <th onclick="sortBy('orderNum')">Order # ↕</th>
+        <th onclick="sortBy('product')">Product ↕</th>
+        <th onclick="sortBy('agent')">Agent ↕</th>
+        <th onclick="sortBy('tl')">TL ↕</th>
+        <th onclick="sortBy('escalatedDT')">Escalated At ↕</th>
+        <th onclick="sortBy('channel')">Channel ↕</th>
+        <th onclick="sortBy('sheetStatus')">Status ↕</th>
+        <th onclick="sortBy('reason')">Reason ↕</th>
+        <th>⏱ Escalated</th>
+        <th>⏱ Validation</th>
+        <th>⏱ Pending</th>
+        <th>⏱ Resolved / Unres</th>
+        <th>⏱ Total Time</th>
+        <th>👤 Resolved By</th>
+      </tr>
+    </thead>
+    <tbody id="tbody">
+      <tr><td colspan="15" style="text-align:center;padding:40px;color:var(--muted)">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  iVisa Escalations &nbsp;·&nbsp; Syncs every <span>10s</span> &nbsp;·&nbsp;
+  All status changes via <span>Slack workflow buttons</span> &nbsp;·&nbsp;
+  <span>Read-only dashboard — same for all users ✓</span>
+</footer>
+<div id="toast"></div>
+
+<div id="modal" class="modal-overlay">
+  <div class="modal-box">
+    <h2>⚙ Configuration</h2>
+    <p>Dashboard reads directly from published Google Sheet CSV. No API needed.</p>
+    <p style="font-size:.75rem;color:var(--g);margin-top:8px">
+      ✓ Works for all users · No setup required · Syncs every 10s
+    </p>
+    <div class="modal-actions">
+      <button class="primary" onclick="closeConfig()">✔ Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ── THEME ── */
+var isDark = localStorage.getItem('iv_theme') !== 'light';
+function applyTheme(){
+  document.documentElement.setAttribute('data-theme', isDark?'dark':'light');
+  document.getElementById('theme-btn').textContent = isDark?'☀ Light':'🌙 Dark';
+}
+function toggleTheme(){ isDark=!isDark; localStorage.setItem('iv_theme',isDark?'dark':'light'); applyTheme(); }
+applyTheme();
+
+/* ── CONFIG ── */
+// API URL hardcoded - works for ALL users without any Config needed
+// Only update this line if you redeploy the Apps Script
+var API_URL = 'https://script.google.com/macros/s/AKfycbxUCgFV7rSXFQB-qtRTCXYEkjTV6nYANDhJIC1S8GO-xGoh_sNDr1_i3bVfv17y7SbW/exec';
+// Allow override only from a new localStorage key (not the old one)
+var _override = localStorage.getItem('iv_api_v10');
+if(_override) API_URL = _override;
+var INTERCOM_BASE = 'https://app.intercom.com/a/apps/tl2ihnzm/inbox/inbox/conversation/';
+
+/* ── DATE HELPERS ── */
+function parseUTC(raw){
+  if(!raw||!raw.trim()) return null;
+  raw = raw.trim();
+  // "Apr 22, 2026, 3:06:54 AM"
+  var mA=raw.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i);
+  if(mA){
+    var MO={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+    var hr=+mA[4], ap=(mA[7]||'').toUpperCase();
+    if(ap==='PM'&&hr<12)hr+=12; if(ap==='AM'&&hr===12)hr=0;
+    return Date.UTC(+mA[3],MO[mA[1].toLowerCase().slice(0,3)],+mA[2],hr,+mA[5],+(mA[6]||0));
+  }
+  // "4/22/2026 3:06:54"
+  var mB=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if(mB) return Date.UTC(+mB[3],+mB[1]-1,+mB[2],+mB[4],+mB[5],+(mB[6]||0));
+  return null;
+}
+
+function fmtDate(ms){
+  if(!ms) return '—';
+  var n = +ms; // handle both number and string
+  var d=new Date(n-5*3600000); // UTC→COT
+  return pad(d.getUTCDate())+'/'+pad(d.getUTCMonth()+1)+'/'+d.getUTCFullYear()+
+    ' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());
+}
+
+function fmtMs(ms){
+  if(!ms||ms<1000) return null;
+  var s=Math.floor(ms/1000),m=Math.floor(s/60);s%=60;
+  var h=Math.floor(m/60);m%=60;
+  var d=Math.floor(h/24);h%=24;
+  if(d) return d+'d '+h+'h '+pad(m)+'m';
+  if(h) return h+'h '+pad(m)+'m';
+  if(m) return m+'m '+pad(s)+'s';
+  return s+'s';
+}
+function pad(n){ return String(n).padStart(2,'0'); }
+
+// Checks whether a ticket's Escalated_date_time (esc timestamp, in UTC ms)
+// falls within the [fromStr, toStr] date range (YYYY-MM-DD strings from
+// <input type="date">). Compares using the same UTC→COT shift as fmtDate()
+// so "the day shown in the table" is what gets matched.
+function dateInRange(escMs, fromStr, toStr){
+  if(!fromStr && !toStr) return true;
+  if(!escMs) return false; // no timestamp = can't match a date range
+  var d = new Date(escMs - 5*3600000);
+  var dayMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  if(fromStr){
+    var f = Date.UTC.apply(null, fromStr.split('-').map(function(v,i){return i===1?+v-1:+v;}));
+    if(dayMs < f) return false;
+  }
+  if(toStr){
+    var t = Date.UTC.apply(null, toStr.split('-').map(function(v,i){return i===1?+v-1:+v;}));
+    if(dayMs > t) return false;
+  }
+  return true;
+}
+
+/* ── STATUS ── */
+function getStatus(t){
+  var sv=(t.sheetStatus||'').trim();
+
+  // If col M (CX Outbound timestamp) exists, status is CX Outbound
+  // regardless of what col I says — handles case where workflow
+  // writes timestamp but forgets to update col I
+  if(t.cxUtcMs) return 'CX Outbound';
+
+  // Otherwise trust col I
+  if(sv) return sv;
+
+  // Derive from timestamps if col I empty
+  if(t.resUtcMs) return 'Resolved';
+  if(t.penUtcMs) return 'Pending';
+  if(t.valUtcMs) return 'Validation';
+  return 'Escalated';
+}
+
+/* ════════════════════════════════════════════════════════
+   TIMER CALCULATION — pure math from sheet timestamps
+
+   F = Escalated_date_time  (col F)
+   J = Validation_time      (col J)
+   K = Pending_time         (col K)
+   L = Resolved_time        (col L) — also used for Unresolved
+   M = Cx_outbound          (col M) — stops Res/Unres timer, starts CX timer
+
+   Rules:
+   • Escalated timer  = J-F    (frozen once J exists, shows as idle after)
+   • Validation timer = K-J    (frozen once K exists)
+   • Pending timer    = L-K    (frozen once L exists)
+   • Res/Unres timer  = M-L    (runs while Resolved OR Unresolved, stops at M)
+   • CX Outbound timer= now-M  (runs after M, stops only when Returned)
+   • TOTAL TIME       = sum    FROZEN only when status = Returned
+
+   Status = Returned → ALL timers stop, Total Time frozen (the only such status)
+════════════════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════
+   TIMER CALCULATION
+
+   F = Escalated_time   col F
+   J = Validation_time  col J   → stops Escalated
+   K = Pending_time     col K   → stops Validation
+   L = Resolved_time    col L   → stops Pending
+   M = Cx_outbound      col M   → stops Resolved, stops ALL
+
+   RUNNING statuses:  Escalated, Validation, Pending, Resolved, Unresolved*
+   STOP ALL statuses: CX Outbound, Returned, Unresolved**
+
+   * Unresolved shares the Resolved column (L) for its timer
+   ** When status = CX Outbound/Returned/Unresolved AND M is written → stop all
+
+   ⏱ Escalated   = J - F           (frozen when J exists, else running)
+   ⏱ Validation  = K - J           (frozen when K exists, else running)
+   ⏱ Pending     = L - K           (frozen when L exists, else running)
+   ⏱ Resolved    = M - L           (frozen when M exists, else running)
+   ⏱ CX Outbound = stopTime - M    (shown only when M exists, frozen)
+   ⏱ Total       = sum of all      FROZEN when CX Outbound / Returned / Unresolved
+════════════════════════════════════════════════════════ */
+function calcTimers(t, now){
+  var F  = t.escUtcMs;
+  var J  = t.valUtcMs;
+  var K  = t.penUtcMs;
+  var L  = t.resUtcMs;
+  var M  = t.cxUtcMs;   // written when CX Outbound/Returned/Unresolved pressed
+  var st = getStatus(t);
+
+  if(!F) return {esc:0, val:0, pen:0, res:0, cx:0};
+
+  // These statuses stop ALL timers. "Returned" is the sole terminal status
+  // that a human picks explicitly to close a ticket out.
+  var isFinal = (st==='CX Outbound' || st==='Returned' || st==='Unresolved');
+
+  // Stop point: when M was written (exact moment agent pressed the button)
+  // If M missing but status is final, use now as fallback
+  var stopAt = isFinal ? (M || now) : now;
+
+  return {
+    // Escalated: F → J (frozen when J written, else runs to stopAt)
+    esc: Math.max(0, (J || stopAt) - F),
+
+    // Validation: J → K (only starts when J exists)
+    val: J ? Math.max(0, (K || stopAt) - J) : 0,
+
+    // Pending: K → L (only starts when K exists OR status=Pending/beyond)
+    // If K missing but we're in Pending/Resolved/CX/etc, use J as fallback
+    pen: K ? Math.max(0, (L || stopAt) - K)
+           : (J && (st==='Pending'||st==='Resolved'||st==='Unresolved'||st==='CX Outbound'||st==='Returned'))
+             ? Math.max(0, (L || stopAt) - J) : 0,
+
+    // Resolved/Unresolved: L → M (only starts when L exists)
+    // If L missing but we're in Resolved/CX/etc, use K as fallback
+    res: L ? Math.max(0, (M || stopAt) - L)
+           : (K && (st==='Resolved'||st==='Unresolved'||st==='CX Outbound'||st==='Returned'))
+             ? Math.max(0, (M || stopAt) - K) : 0,
+
+    // CX Outbound: M → stopAt (time spent in CX Outbound phase)
+    // Only shown when M exists — this is what happened between
+    // "Resolved was pressed" and "CX Outbound/Returned was pressed"
+    cx:  M ? Math.max(0, stopAt - M) : 0
+  };
+}
+
+/* ── DATA ── */
+var ALL=[], sortField='escalatedDT', sortAsc=false;
+var countdown=10, cdInt=null, tickerInt=null;
+
+// CSV source: "Dashboard 2" tab, via Publish to web (reliable — locks to
+// this exact tab regardless of general sharing settings).
+var CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vScTkZ6BmKP06jhiNHifIWpnSTr_w9zTnwH4hTrcpKhqD0DbtwUtu8OsH4f0iIY6QOB0JjyDiAO0rhA/pub?gid=1590187264&single=true&output=csv';
+
+// NOTE: this v2 dashboard reads directly from the CSV above — it does NOT
+// call an Apps Script API. The original dashboard's Apps Script is bound to
+// a different spreadsheet, so calling it here would silently show the wrong
+// sheet's data. If you deploy a new Apps Script bound to THIS sheet later,
+// send me the /exec URL and I'll wire the live-API path back in.
+function fetchData(){
+  setStatus('demo','Syncing…');
+  fetchCSV();
+}
+
+// Process data from Apps Script API
+function processAPIData(tickets){
+  var COT = 5*3600000;
+  function toMs(v){
+    if(!v) return null;
+    var ms = typeof v==='string' && v.includes('T') ? new Date(v).getTime() : +v;
+    if(isNaN(ms)||ms<1000000000000) return null;
+    if(ms > Date.now()+3600000) ms -= COT;
+    return ms;
+  }
+  ALL = tickets.filter(function(t){return t.id;}).map(function(t){
+    return {
+      id:t.id, orderNum:t.orderNum, intercomLink:t.intercomLink, product:t.product,
+      agent:t.agent, tl:t.tl, escalatedDT:t.escalatedDT,
+      escUtcMs:toMs(t.escalatedDT), channel:t.channel,
+      sheetStatus:t.sheetStatus, reason:t.reason,
+      valUtcMs:toMs(t.validationDT), penUtcMs:toMs(t.pendingDT),
+      resUtcMs:toMs(t.resolvedDT),   cxUtcMs:toMs(t.cxOutboundDT),
+      resolvedBy:t.resolvedBy
+    };
+  });
+  renderAll();
+  setStatus('live','● Live');
+  document.getElementById('last-update').textContent='Synced '+new Date().toLocaleTimeString();
+  resetCountdown();
+}
+
+// CSV fallback
+async function fetchCSV(){
+  try{
+    var r = await fetch(CSV_URL+'&t='+Date.now());
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    var text = await r.text();
+    ALL = parseCSV(text);
+    renderAll();
+    setStatus('live','● Live (CSV)');
+    document.getElementById('last-update').textContent='Synced '+new Date().toLocaleTimeString();
+    resetCountdown();
+  }catch(e){
+    setStatus('error','✕ '+e.message);
+  }
+}
+
+function parseCSV(text){
+  var lines=text.trim().split('\n');
+  if(lines.length<2) return [];
+  var COT=5*3600000;
+  function toMs(v){
+    if(!v||!v.trim()) return null;
+    var ms=parseUTC(v.trim());
+    if(!ms) return null;
+    if(ms>Date.now()+3600000) ms-=COT;
+    return ms;
+  }
+  var rows=[];
+  for(var i=1;i<lines.length;i++){
+    if(!lines[i].trim()) continue;
+    var v=splitCSV(lines[i]);
+    var id=cl(v[1]); if(!id) continue;
+    rows.push({
+      id:id, intercomLink:cl(v[0]), product:cl(v[2]),
+      agent:cl(v[3]), tl:cl(v[4]),
+      escalatedDT:cl(v[5]), escUtcMs:toMs(cl(v[5])),
+      channel:cl(v[6]), sheetStatus:cl(v[8]),
+      valUtcMs:toMs(cl(v[9])), penUtcMs:toMs(cl(v[10])),
+      resUtcMs:toMs(cl(v[11])), cxUtcMs:toMs(cl(v[12])),
+      resolvedBy:cl(v[13]),
+      orderNum:cl(v[14]), // col O — Order Number
+      reason:cl(v[15])    // col P — NEW: Reason (from Slack workflow)
+    });
+  }
+  return rows;
+}
+
+function splitCSV(line){
+  var res=[],cur='',q=false;
+  for(var i=0;i<line.length;i++){
+    if(line[i]==='"'){q=!q;}
+    else if(line[i]===',' && !q){res.push(cur);cur='';}
+    else{cur+=line[i];}
+  }
+  res.push(cur); return res;
+}
+function cl(v){ return (v||'').replace(/^"|"$/g,'').trim(); }
+
+/* ── RENDER ── */
+function renderAll(){ populateFilters(); applyFilters(); updateMetrics(); startTicker(); }
+
+function applyFilters(){
+  var fs=document.getElementById('f-status').value;
+  var ftl=document.getElementById('f-tl').value;
+  var fc=document.getElementById('f-ch').value;
+  var fr=document.getElementById('f-reason').value;
+  var ffrom=document.getElementById('f-date-from').value;
+  var fto=document.getElementById('f-date-to').value;
+  var ft=document.getElementById('f-search').value.toLowerCase();
+
+  var filtered=ALL.filter(function(t){
+    var st=getStatus(t);
+    if(fs&&st!==fs) return false;
+    if(ftl&&t.tl!==ftl) return false;
+    if(fc&&t.channel!==fc) return false;
+    if(fr&&t.reason!==fr) return false;
+    if((ffrom||fto)&&!dateInRange(t.escUtcMs,ffrom,fto)) return false;
+    if(ft&&!(t.id+' '+(t.orderNum||'')+' '+t.agent+' '+t.product+' '+t.channel+' '+t.tl).toLowerCase().includes(ft)) return false;
+    return true;
+  });
+  filtered.sort(function(a,b){
+    var va=a[sortField]||'', vb=b[sortField]||'';
+    return sortAsc?(va<vb?-1:va>vb?1:0):(va>vb?-1:va<vb?1:0);
+  });
+  drawTable(filtered);
+}
+
+function stBadge(st){
+  var cls='st-'+st.toLowerCase().replace(/ /g,'-');
+  return '<span class="st-badge '+cls+'">'+st+'</span>';
+}
+
+function drawTable(tickets){
+  var tbody=document.getElementById('tbody');
+  if(!tickets.length){
+    tbody.innerHTML='<tr><td colspan="15" style="text-align:center;padding:40px;color:var(--muted)">No escalations match filters</td></tr>';
+    return;
+  }
+  var now=Date.now();
+  tbody.innerHTML=tickets.map(function(t){
+    var st  = getStatus(t);
+    var tm  = calcTimers(t,now);
+    var J   = t.valUtcMs;
+    var K   = t.penUtcMs;
+    var L   = t.resUtcMs;
+    var M   = t.cxUtcMs;
+    var rb  = t.resolvedBy||'';
+    var url = t.intercomLink||(INTERCOM_BASE+t.id);
+
+    var isFinal = (st==='CX Outbound'||st==='Returned'||st==='Unresolved');
+    var totMs = tm.esc+tm.val+tm.pen+tm.res+tm.cx;
+
+    // Accent=running, grey=frozen, purple=resolved running, dash=not started
+    var escCls = tm.esc===0 ? 't-dash' : (J||isFinal) ? 't-done' : 't-run';
+    var valCls = tm.val===0 ? 't-dash' : (K||isFinal) ? 't-done' : 't-run';
+    var penCls = tm.pen===0 ? 't-dash' : (L||isFinal) ? 't-done' : 't-run';
+    // Resolved timer: purple running when L exists but M doesn't, grey when frozen
+    var resCls = tm.res===0 ? 't-dash' : (M||isFinal) ? 't-done' : 't-res-run';
+
+    var totCls = totMs===0 ? 'tot-dash' : isFinal ? 'tot-frozen' : 'tot-live';
+    var totId  = isFinal ? '' : ' id="tt-'+t.id+'"';
+
+    return '<tr>' +
+      '<td><a class="ticket-link" href="'+url+'" target="_blank">'+t.id+'</a></td>' +
+      '<td style="font-family:\'DM Mono\',monospace;font-size:.7rem">'+(t.orderNum||'—')+'</td>' +
+      '<td>'+(t.product||'—')+'</td>' +
+      '<td style="font-size:.72rem">'+(t.agent||'—')+'</td>' +
+      '<td style="font-size:.72rem">'+(t.tl||'—')+'</td>' +
+      '<td style="font-family:\'DM Mono\',monospace;font-size:.68rem">'+fmtDate(t.escUtcMs)+'</td>' +
+      '<td style="font-family:\'DM Mono\',monospace;font-size:.68rem;color:var(--g2)">'+(t.channel||'—')+'</td>' +
+      '<td>'+stBadge(st)+'</td>' +
+      '<td style="font-size:.72rem">'+(t.reason||'—')+'</td>' +
+      '<td><span class="timer '+escCls+'" id="te-'+t.id+'">'+(fmtMs(tm.esc)||'—')+'</span></td>' +
+      '<td><span class="timer '+valCls+'" id="tv-'+t.id+'">'+(fmtMs(tm.val)||'—')+'</span></td>' +
+      '<td><span class="timer '+penCls+'" id="tp-'+t.id+'">'+(fmtMs(tm.pen)||'—')+'</span></td>' +
+      '<td><span class="timer '+resCls+'" id="tr-'+t.id+'">'+(fmtMs(tm.res)||'—')+'</span></td>' +
+      '<td><span class="tot '+totCls+'"'+totId+'>'+(fmtMs(totMs)||'—')+'</span></td>' +
+      '<td><span class="rb'+(rb?'':' empty')+'" title="'+rb+'">'+(rb||'—')+'</span></td>' +
+      '</tr>';
+  }).join('');
+}
+
+/* ── TICKER ── */
+function startTicker(){
+  if(tickerInt) clearInterval(tickerInt);
+  tickerInt=setInterval(function(){
+    var now=Date.now();
+    ALL.forEach(function(t){
+      var st=getStatus(t);
+      if(st==='CX Outbound'||st==='Returned'||st==='Unresolved') return; // all frozen
+
+      var tm=calcTimers(t,now);
+      var totMs=tm.esc+tm.val+tm.pen+tm.res+tm.cx;
+
+      var J2=t.valUtcMs, K2=t.penUtcMs, L2=t.resUtcMs, M2=t.cxUtcMs;
+      var escCls = tm.esc===0?'t-dash': J2?'t-done':'t-run';
+      var valCls = tm.val===0?'t-dash': K2?'t-done': J2?'t-run':'t-dash';
+      var penCls = tm.pen===0?'t-dash': L2?'t-done': K2?'t-run':'t-dash';
+      var resCls = tm.res===0?'t-dash': M2?'t-done': L2?'t-res-run':'t-dash';
+
+      var eEl=document.getElementById('te-'+t.id);
+      var vEl=document.getElementById('tv-'+t.id);
+      var pEl=document.getElementById('tp-'+t.id);
+      var rEl=document.getElementById('tr-'+t.id);
+      var ttEl=document.getElementById('tt-'+t.id);
+
+      if(eEl){eEl.textContent=fmtMs(tm.esc)||'—'; eEl.className='timer '+escCls;}
+      if(vEl){vEl.textContent=fmtMs(tm.val)||'—'; vEl.className='timer '+valCls;}
+      if(pEl){pEl.textContent=fmtMs(tm.pen)||'—'; pEl.className='timer '+penCls;}
+      if(rEl){rEl.textContent=fmtMs(tm.res)||'—'; rEl.className='timer '+resCls;}
+      if(ttEl){ttEl.textContent=fmtMs(totMs)||'—';}
+    });
+    updateMetrics();
+  },1000);
+}
+
+/* ── METRICS ── */
+function updateMetrics(){
+  var c={total:ALL.length,Escalated:0,Validation:0,Pending:0,
+         Resolved:0,Unresolved:0,'CX Outbound':0,Returned:0};
+  ALL.forEach(function(t){
+    var st=getStatus(t);
+    if(c[st]!==undefined) c[st]++;
+  });
+  document.getElementById('m-total').textContent = c.total;
+  document.getElementById('m-esc').textContent   = c.Escalated;
+  document.getElementById('m-val').textContent   = c.Validation;
+  document.getElementById('m-pen').textContent   = c.Pending;
+  document.getElementById('m-res').textContent   = c.Resolved+c.Unresolved;
+  document.getElementById('m-cx').textContent    = c['CX Outbound'];
+  document.getElementById('m-ret').textContent   = c.Returned;
+}
+
+/* ── FILTERS / SORT / EXPORT ── */
+function populateFilters(){
+  pop('f-tl', ALL.map(function(t){return t.tl;}),      'All TLs');
+  pop('f-ch', ALL.map(function(t){return t.channel;}), 'All Channels');
+  pop('f-reason', ALL.map(function(t){return t.reason;}), 'All Reasons');
+}
+function pop(id,vals,lbl){
+  var sel=document.getElementById(id),cur=sel.value;
+  var u=[...new Set(vals.filter(Boolean))].sort();
+  sel.innerHTML='<option value="">'+lbl+'</option>'+
+    u.map(function(v){return '<option value="'+v+'"'+(v===cur?' selected':'')+'>'+v+'</option>';}).join('');
+}
+function sortBy(f){ if(f===sortField)sortAsc=!sortAsc; else{sortField=f;sortAsc=true;} applyFilters(); }
+function resetFilters(){
+  ['f-status','f-tl','f-ch','f-reason'].forEach(function(i){document.getElementById(i).value='';});
+  document.getElementById('f-date-from').value='';
+  document.getElementById('f-date-to').value='';
+  document.getElementById('f-search').value=''; applyFilters();
+}
+function exportCSV(){
+  var now=Date.now();
+  var h=['ID','Order_Number','Product','Agent','TL','Escalated_COT','Channel','Status','Reason',
+    'Esc_Timer','Val_Timer','Pen_Timer','Res_Unres_Timer','CX_Timer','Total_Time','Resolved_By'];
+  var rows=ALL.map(function(t){
+    var tm=calcTimers(t,now);
+    var tot=tm.esc+tm.val+tm.pen+tm.res+tm.cx;
+    return [t.id,t.orderNum,t.product,t.agent,t.tl,fmtDate(t.escUtcMs),t.channel,getStatus(t),t.reason,
+      fmtMs(tm.esc)||'—',fmtMs(tm.val)||'—',fmtMs(tm.pen)||'—',fmtMs(tm.res)||'—',
+      fmtMs(tm.cx)||'—',fmtMs(tot)||'—',t.resolvedBy||'—'].join(',');
+  });
+  var blob=new Blob(['\uFEFF'+[h.join(',')].concat(rows).join('\n')],{type:'text/csv;charset=utf-8;'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='escalations_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+}
+
+/* ── CONFIG ── */
+function openConfig(){ document.getElementById('cfg-api').value=API_URL; document.getElementById('modal').classList.add('show'); }
+function closeConfig(){ document.getElementById('modal').classList.remove('show'); }
+function saveConfig(){
+  var api=document.getElementById('cfg-api').value.trim();
+  if(!api){alert('Enter Apps Script URL');return;}
+  API_URL=api; localStorage.setItem('iv_api_v10',api);
+  closeConfig(); fetchData();
+  showToast('Config saved','success');
+}
+
+/* ── COUNTDOWN ── */
+function resetCountdown(){ countdown=10; document.getElementById('countdown').textContent='10s'; }
+function startCountdown(){
+  if(cdInt) clearInterval(cdInt);
+  cdInt=setInterval(function(){
+    countdown--;
+    document.getElementById('countdown').textContent=Math.max(countdown,0)+'s';
+    if(countdown<=0){ fetchData(); countdown=10; }
+  },1000);
+}
+function setStatus(t,x){ document.getElementById('status-badge').className=t; document.getElementById('status-text').textContent=x; }
+var toastT;
+function showToast(msg,type){
+  var el=document.getElementById('toast'); el.textContent=msg; el.className='show '+(type||'success');
+  clearTimeout(toastT); toastT=setTimeout(function(){el.className='';},4000);
+}
+
+fetchData();
+startCountdown();
+</script>
+</body>
+</html>
